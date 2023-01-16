@@ -485,7 +485,7 @@ static void complete_job(cl_event ev __attribute__ ((unused)),
 
 	uint320_sum(st->partsums, job->npart);
 
-	memcpy(result, st->partsums[0].arr, sizeof (result));
+	uint320_dump_be64(result, &st->partsums[0]);
 
 	clReleaseEvent(job->rdev);
 	clReleaseEvent(job->exev);
@@ -600,10 +600,14 @@ static int init_dispatch(struct deluge_highway *this, struct deluge *root,
 
 static void finlz_dispatch(struct deluge_highway *this)
 {
+	struct station *st;
 	struct list *elem;
 
-	while ((elem = list_pop(&this->stidle)) != NULL)
-		free_station(list_item(elem, struct station, stqueue));
+	while ((elem = list_pop(&this->stidle)) != NULL) {
+		st = list_item(elem, struct station, stqueue);
+		free_program(st->prog);
+		free_station(st);
+	}
 
 	release_deluge(this->root);
 	pthread_mutex_destroy(&this->qlock);

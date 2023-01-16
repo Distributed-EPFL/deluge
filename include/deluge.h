@@ -82,7 +82,7 @@ int deluge_highway_alloc(deluge_highway_t highway, size_t len);
  * - sum all the resulting `uint256_t` into a single `uint320_t`
  * - call the given `cb` callback giving it the following arguments:
  *   - the status of the job: `DELUGE_SUCCESS` in case of success
- *   - the resulting `uint320_t` in little endian
+ *   - the resulting `uint320_t` in big endian
  *   - the given `user` argument
  * Return `DELUGE_SUCCESS` if the job has been successfully scheduled.
  */
