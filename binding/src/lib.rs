@@ -8,7 +8,7 @@ use std::{
     pin::Pin,
     ptr,
     slice,
-    sync::{Arc, Mutex},
+    sync::Mutex,
     task::{Context, Poll, Waker},
 };
 
@@ -101,20 +101,13 @@ pub struct Highway {
 }
 
 pub struct HighwayHashSum<'a> {
-    runner: &'a Highway,
-    inner: Arc<Mutex<HighwayHashSumData>>,  // TODO: lifetime > Arc
+    inner: Mutex<HighwayHashSumState<'a>>,
 }
 
-#[derive(Debug)]
-enum HighwayHashSumState {
-    Created,                             // Created(&'a &[u64])
+enum HighwayHashSumState<'a> {
+    Created(&'a Highway, &'a[u64]),
     Running(Option<Waker>),
     Finished(Result<[u64; 5], Error>),
-}
-
-struct HighwayHashSumData {
-    input: Vec<u64>,                     // put that as a ref in state
-    state: HighwayHashSumState,
 }
 
 
@@ -171,18 +164,17 @@ extern "C" fn update_cb(
     res: *mut u64,
     user: *const c_void
 ) {
-    let arc = unsafe {
-	Arc::from_raw(user as *const Mutex<HighwayHashSumData>)
-    };
-    let mut data = arc.lock().unwrap();
+    let mut state = unsafe {
+	&*(user as *const Mutex<HighwayHashSumState>)
+    }.lock().unwrap();
 
-    match &mut data.state {
+    match &mut *state {
 	HighwayHashSumState::Running(waker) => {
 	    if let Some(waker) = waker.take() {
 		waker.wake();
 	    }
 
-	    data.state = HighwayHashSumState::Finished(match status {
+	    *state = HighwayHashSumState::Finished(match status {
 		ffi::DELUGE_SUCCESS => Ok(unsafe {
 		    slice::from_raw_parts(res, 5)
 		}.try_into().unwrap()),
@@ -208,7 +200,7 @@ impl Highway {
 	}
     }
 
-    pub fn hashsum(&self, elems: &[u64]) -> HighwayHashSum<'_> {
+    pub fn hashsum<'a>(&'a self, elems: &'a[u64]) -> HighwayHashSum<'a> {
 	HighwayHashSum::new(self, elems)
     }
 }
@@ -222,15 +214,9 @@ impl Drop for Highway {
 
 
 impl<'a> HighwayHashSum<'a> {
-    fn new(runner: &'a Highway, input: &[u64]) -> Self {
-	let data = Arc::new(Mutex::new(HighwayHashSumData {
-	    input: input.to_vec(),
-	    state: HighwayHashSumState::Created,
-	}));
-
+    fn new(runner: &'a Highway, input: &'a[u64]) -> Self {
 	HighwayHashSum {
-	    runner,
-	    inner: data
+	    inner: Mutex::new(HighwayHashSumState::Created(runner, input)),
 	}
     }
 }
@@ -242,19 +228,19 @@ impl<'a> Future for HighwayHashSum<'a> {
 	self: Pin<&mut Self>,
 	cx: &mut Context<'_>
     ) -> Poll<Self::Output> {
-	let mut data = self.inner.lock().unwrap();
+	let mut state = self.inner.lock().unwrap();
 
-	match &data.state {
-	    HighwayHashSumState::Created => {
+	match &*state {
+	    HighwayHashSumState::Created(runner, input) => {
 		match unsafe {
 		    ffi::deluge_highway_schedule(
-			self.runner.inner, data.input.as_ptr(),
-			data.input.len(), Some(update_cb),
-			Arc::into_raw(Arc::clone(&self.inner)) as *const c_void
+			runner.inner, input.as_ptr(), input.len(),
+			Some(update_cb),
+			&self.inner as *const _ as *const c_void
 		    )
 		} {
 		    ffi::DELUGE_SUCCESS => {
-			data.state = HighwayHashSumState::Running
+			*state = HighwayHashSumState::Running
 			    (Some(cx.waker().clone()));
 			Poll::Pending
 		    },
@@ -262,8 +248,7 @@ impl<'a> Future for HighwayHashSum<'a> {
 		}
 	    },
 
-	    HighwayHashSumState::Finished(res) =>
-		Poll::Ready(res.clone()),
+	    HighwayHashSumState::Finished(res) => Poll::Ready(res.clone()),
 
 	    _ => Poll::Pending
 	}
@@ -275,6 +260,7 @@ impl<'a> Future for HighwayHashSum<'a> {
 mod tests {
     use async_std::task;
     use super::*;
+
 
     #[test]
     fn deluge() {
