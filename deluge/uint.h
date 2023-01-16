@@ -72,15 +72,4 @@ void uint320_add(uint320_t *restrict dst, const uint320_t *restrict src);
 void uint320_sum(local uint320_t *restrict arr, size_t n);
 
 
-/* #if !defined (__OPENCL_VERSION__) */
-
-/* #define UINT320_PRINTF_CODE          "%016lx%016lx%016lx%016lx%016lx" */
-
-/* #define UINT320_PRINTF_ARG(_uint)    (_uint).arr[4], (_uint).arr[3],   \ */
-/* 	                             (_uint).arr[2], (_uint).arr[1],   \ */
-/* 	                             (_uint).arr[0] */
-
-/* #endif  /\* !defined (__OPENCL_VERSION__) *\/ */
-
-
 #endif
