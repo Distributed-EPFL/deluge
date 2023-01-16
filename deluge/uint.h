@@ -48,6 +48,15 @@ static inline void uint320_init_be64(uint320_t *restrict dst,
 		dst->arr[i] = src[4 - i];
 }
 
+static inline void uint320_dump_be64(uint64_t *restrict dst,
+				     const uint320_t *restrict src)
+{
+	size_t i;
+
+	for (i = 0; i < 5; i++)
+		dst[i] = src->arr[4 - i];
+}
+
 static inline void uint320_init_le64(uint320_t *restrict dst,
 				     const uint64_t *restrict src)
 {

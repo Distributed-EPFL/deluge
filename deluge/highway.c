@@ -485,7 +485,7 @@ static void complete_job(cl_event ev __attribute__ ((unused)),
 
 	uint320_sum(st->partsums, job->npart);
 
-	memcpy(result, st->partsums[0].arr, sizeof (result));
+	uint320_dump_be64(result, &st->partsums[0]);
 
 	clReleaseEvent(job->rdev);
 	clReleaseEvent(job->exev);
