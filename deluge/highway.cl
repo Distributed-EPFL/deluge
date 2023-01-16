@@ -72,15 +72,15 @@ static void finalize_256(highway_t *restrict st, generic uint64_t hash[4])
                           st->v1[0] + st->mul1[0],
                           st->v0[1] + st->mul0[1],
                           st->v0[0] + st->mul0[0],
-                          &hash[1], &hash[0]);
+                          &hash[2], &hash[3]);
         modular_reduction(st->v1[3] + st->mul1[3],
                           st->v1[2] + st->mul1[2],
                           st->v0[3] + st->mul0[3],
                           st->v0[2] + st->mul0[2],
-                          &hash[3], &hash[2]);
+                          &hash[0], &hash[1]);
 }
 
-static void hash(highway_t *restrict st, uint256_t *restrict h, uint64_t d)
+static void hash(highway_t *restrict st, uint64_t *restrict h, uint64_t d)
 {
         uint64_t lanes[4];
 
@@ -91,18 +91,18 @@ static void hash(highway_t *restrict st, uint256_t *restrict h, uint64_t d)
 
         update(lanes, st);
 
-	finalize_256(st, h->arr);
+	finalize_256(st, h);
 }
 
 
 
-static void reduction_320(size_t n, local uint320_t *mem,
-			  private uint64_t val[5])
+static void reduction_320(size_t n, local uint320_t *restrict mem,
+			  private const uint256_t *restrict val)
 {
 	size_t last_group = get_num_groups(0) - 1;
 	size_t group_size = get_local_size(0);
 
-	uint320_init_be64(&mem[get_local_id(0)], val);
+	uint320_init_256(&mem[get_local_id(0)], val);
 
 	if (get_group_id(0) == last_group)
 		n = n - last_group * group_size;
@@ -116,10 +116,10 @@ kernel void hash_sum(uint64_t n, global const uint64_t *gin,
 		     constant const highway_t *restrict initial_st,
 		     global uint320_t *gout, local uint320_t *lmem)
 {
-	private uint64_t elem, h[5];
 	private uint256_t digest;
+	private uint64_t elem;
 	private highway_t st;
-	size_t gid;
+	size_t i, gid;
 
 	gid = get_global_id(0);
 	if (gid >= n)
@@ -129,16 +129,13 @@ kernel void hash_sum(uint64_t n, global const uint64_t *gin,
 	st = *initial_st;
 	hash(&st, &digest, gin[gid]);
 
-	h[0] = 0;
-	h[1] = digest.arr[0];
-	h[2] = digest.arr[1];
-	h[3] = digest.arr[2];
-	h[4] = digest.arr[3];
-
-	reduction_320(n, lmem, h);
+	reduction_320(n, lmem, &digest);
 
 	if (get_local_id(0) != 0)
 		return;
 
-	gout[get_group_id(0)] = lmem[0];
+	for (i = 0; i < 5; i++) {
+		elem = uint320_cast_le64(&lmem[0])[i];
+		uint320_cast_le64(&gout[get_group_id(0)])[i] = elem;
+	}
 }
