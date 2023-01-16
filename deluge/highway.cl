@@ -127,7 +127,7 @@ kernel void hash_sum(uint64_t n, global const uint64_t *gin,
 
 	/* compute highway hash */
 	st = *initial_st;
-	hash(&st, &digest, gin[gid]);
+	hash(&st, uint256_cast_le64(&digest), htod64(gin[gid]));
 
 	reduction_320(n, lmem, &digest);
 
@@ -135,7 +135,7 @@ kernel void hash_sum(uint64_t n, global const uint64_t *gin,
 		return;
 
 	for (i = 0; i < 5; i++) {
-		elem = uint320_cast_le64(&lmem[0])[i];
+		elem = dtoh64(uint320_cast_le64(&lmem[0]))[i];
 		uint320_cast_le64(&gout[get_group_id(0)])[i] = elem;
 	}
 }
