@@ -5,5 +5,7 @@ edition = "2018"
 links = "deluge"
 
 [dependencies]
-async-std = { version = "1.9.0" }
 libc = { version = "0.2" }
+
+[dev-dependencies]
+async-std = { version = "1.9.0" }

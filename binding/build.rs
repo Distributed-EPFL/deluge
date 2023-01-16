@@ -7,6 +7,8 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../Makefile");
+    println!("cargo:rerun-if-changed=../deluge");
 
     let mut cflags = String::from("CFLAGS=");
     let mut ldflags = String::from("LDFLAGS=");
@@ -15,10 +17,15 @@ fn main() {
 	cflags.push_str(" -DNDEBUG");
     }
 
+    let archflags = match env::var("CARGO_CFG_TARGET_ARCH") {
+	Ok(arch) => format!("-march={}", arch.replace("_", "-")),
+	_ => String::from("-mtune=generic"),
+    };
+
     if let Ok(opt) = env::var("OPT_LEVEL") {
 	if let Ok(lvl) = opt.parse::<u8>() {
 	    if lvl >= 1 {
-		cflags.push_str(" -O2 -mtune=generic");
+		cflags.push_str(format!(" -O2 {}", archflags).as_str());
 	    }
 	    if lvl >= 3 {
 		cflags.push_str(" -flto");
