@@ -1,12 +1,21 @@
-pub use self::ffi::api::*;
+extern crate libc;
+
+use libc::{c_int, c_void};
+
+use std::{
+    convert::TryInto,
+    future::Future,
+    pin::Pin,
+    ptr,
+    slice,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
 
 
 mod ffi {
-    extern crate libc;
-
-
-    use libc::{c_int, c_void};
     use std::option::Option;
+    use super::{c_int, c_void};
 
 
     pub const DELUGE_SUCCESS: c_int = 0;
@@ -71,217 +80,195 @@ mod ffi {
             user: *const c_void,
 	) -> c_int; 
     }
+}
 
 
-    pub mod api {
-	use std::{
-	    convert::TryInto,
-	    future::Future,
-	    pin::Pin,
-	    ptr,
-	    slice,
-	    sync::{Arc, Mutex},
-	    task::{Context, Poll, Waker},
-	};
+#[derive(Clone, Debug, PartialEq)]
+pub enum Error {
+    Failure,        // Implementation issue, use debug mode
+    NoDev,          // Not suitable device
+    OutOfGmem,      // Not enough device global memory
+    OutOfLmem,      // Not enough device local memory
+    Cancel,         // Job canceled
+}
 
-	use super::*;
+pub struct Deluge {
+    inner: ffi::deluge_t,
+}
 
+pub struct Highway {
+    inner: ffi::highway_t,
+}
 
-	#[derive(Clone, Debug, PartialEq)]
-	pub enum Error {
-	    Failure,        // Implementation issue, use debug mode
-	    NoDev,          // Not suitable device
-	    OutOfGmem,      // Not enough device global memory
-	    OutOfLmem,      // Not enough device local memory
-	    Cancel,         // Job canceled
-	}
+pub struct HighwayHashSum<'a> {
+    runner: &'a Highway,
+    inner: Arc<Mutex<HighwayHashSumData>>,  // TODO: lifetime > Arc
+}
 
-	pub struct Deluge {
-	    inner: deluge_t,
-	}
+#[derive(Debug)]
+enum HighwayHashSumState {
+    Created,                             // Created(&'a &[u64])
+    Running(Option<Waker>),
+    Finished(Result<[u64; 5], Error>),
+}
 
-	pub struct Highway {
-	    inner: highway_t,
-	}
-
-	pub struct HighwayHashSum<'a> {
-	    runner: &'a Highway,
-	    inner: Arc<Mutex<HighwayHashSumData>>,  // TODO: lifetime > Arc
-	}
-
-	#[derive(Debug)]
-	enum HighwayHashSumState {
-	    Created,                             // Created(&'a &[u64])
-	    Running(Option<Waker>),
-	    Finished(Result<[u64; 5], Error>),
-	}
-
-	struct HighwayHashSumData {
-	    input: Vec<u64>,                     // put that as a ref in state
-	    state: HighwayHashSumState,
-	}
+struct HighwayHashSumData {
+    input: Vec<u64>,                     // put that as a ref in state
+    state: HighwayHashSumState,
+}
 
 
-	fn code_to_err(code: c_int) -> Error {
-	    match code {
-		DELUGE_FAILURE => Error::Failure,
-		DELUGE_NODEV => Error::NoDev,
-		DELUGE_OUT_OF_GMEM => Error::OutOfGmem,
-		DELUGE_OUT_OF_LMEM => Error::OutOfLmem,
-		DELUGE_CANCEL => Error::Cancel,
-		_ => Error::Failure
+fn code_to_err(code: c_int) -> Error {
+    match code {
+	ffi::DELUGE_FAILURE => Error::Failure,
+	ffi::DELUGE_NODEV => Error::NoDev,
+	ffi::DELUGE_OUT_OF_GMEM => Error::OutOfGmem,
+	ffi::DELUGE_OUT_OF_LMEM => Error::OutOfLmem,
+	ffi::DELUGE_CANCEL => Error::Cancel,
+	_ => Error::Failure
+    }
+}
+
+
+impl Deluge {
+    pub fn new() -> Result<Self, Error> {
+	unsafe {
+	    let mut inner: ffi::deluge_t = ptr::null_mut();
+
+	    match ffi::deluge_create(&mut inner) {
+		ffi::DELUGE_SUCCESS => Ok(Self { inner }),
+		code => Err(code_to_err(code))
 	    }
 	}
+    }
 
+    pub fn new_highway(
+	&mut self,
+	key: &[u64; 4]
+    ) -> Result<Highway, Error> {
+	unsafe {
+	    let mut inner: ffi::highway_t = ptr::null_mut();
 
-	impl Deluge {
-	    pub fn new() -> Result<Self, Error> {
-		unsafe {
-		    let mut inner: deluge_t = ptr::null_mut();
-
-		    match deluge_create(&mut inner) {
-			DELUGE_SUCCESS => Ok(Self { inner }),
-			code => Err(code_to_err(code))
-		    }
-		}
-	    }
-
-	    pub fn new_highway(
-		&mut self,
-		key: &[u64; 4]
-	    ) -> Result<Highway, Error> {
-		unsafe {
-		    let mut inner: highway_t = ptr::null_mut();
-
-		    match deluge_highway_create(self.inner, &mut inner,
-						key.as_ptr()) {
-			DELUGE_SUCCESS => Ok(Highway { inner }),
-			code => Err(code_to_err(code))
-		    }
-		}
-	    }
-	}
-
-	impl Drop for Deluge {
-	    fn drop(&mut self) {
-		unsafe {
-		    deluge_destroy(self.inner);
-		}
-	    }
-	}
-
-	
-	extern "C" fn update_cb(
-	    status: c_int,
-	    res: *mut u64,
-	    user: *const c_void
-	) {
-	    let arc = unsafe {
-		Arc::from_raw(user as *const Mutex<HighwayHashSumData>)
-	    };
-	    let mut data = arc.lock().unwrap();
-
-	    match &mut data.state {
-		HighwayHashSumState::Running(waker) => {
-		    if let Some(waker) = waker.take() {
-			waker.wake();
-		    }
-
-		    data.state = HighwayHashSumState::Finished(match status {
-			DELUGE_SUCCESS => Ok(unsafe {
-			    slice::from_raw_parts(res, 5)
-			}.try_into().unwrap()),
-			code => Err(code_to_err(code))
-		    });
-		},
-
-		_ => panic!("corrupted state!")
-	    }
-	}
-
-	impl Highway {
-	    pub fn space(&mut self) -> usize {
-		unsafe {
-		    deluge_highway_space(self.inner)
-		}
-	    }
-
-	    pub fn alloc(&mut self, len: usize) -> Result<(), Error> {
-		unsafe {
-		    match deluge_highway_alloc(self.inner, len) {
-			DELUGE_SUCCESS => Ok(()),
-			code => Err(code_to_err(code))
-		    }
-		}
-	    }
-
-	    pub fn hashsum(&mut self, elems: &[u64]) -> HighwayHashSum<'_> {
-		HighwayHashSum::new(self, elems)		
-	    }
-	}
-	
-	impl Drop for Highway {
-	    fn drop(&mut self) {
-		unsafe {
-		    deluge_highway_destroy(self.inner);
-		}
-	    }
-	}
-
-
-
-	impl<'a> HighwayHashSum<'a> {
-	    fn new(runner: &'a mut Highway, input: &[u64]) -> Self {
-		let data = Arc::new(Mutex::new(HighwayHashSumData {
-		    input: input.to_vec(),
-		    state: HighwayHashSumState::Created,
-		}));
-
-		HighwayHashSum {
-		    runner,
-		    inner: data
-		}
-	    }
-	}
-
-	impl<'a> Future for HighwayHashSum<'a> {
-	    type Output = Result<[u64; 5], Error>;
-
-	    fn poll(
-		self: Pin<&mut Self>,
-		cx: &mut Context<'_>
-	    ) -> Poll<Self::Output> {
-		let mut data = self.inner.lock().unwrap();
-
-		match &data.state {
-		    HighwayHashSumState::Created => {
-			match unsafe {
-			    deluge_highway_schedule(
-				self.runner.inner, data.input.as_ptr(),
-				data.input.len(), Some(update_cb),
-				Arc::into_raw(Arc::clone(&self.inner)) as *const c_void
-			    )
-			} {
-			    DELUGE_SUCCESS => {
-				data.state = HighwayHashSumState::Running
-				    (Some(cx.waker().clone()));
-				Poll::Pending
-			    },
-			    code => Poll::Ready(Err(code_to_err(code)))
-			}
-		    },
-
-		    HighwayHashSumState::Finished(res) =>
-			Poll::Ready(res.clone()),
-
-		    _ => Poll::Pending
-		}
+	    match ffi::deluge_highway_create(
+		self.inner, &mut inner, key.as_ptr()
+	    ) {
+		ffi::DELUGE_SUCCESS => Ok(Highway { inner }),
+		code => Err(code_to_err(code))
 	    }
 	}
     }
 }
 
+impl Drop for Deluge {
+    fn drop(&mut self) {
+	unsafe { ffi::deluge_destroy(self.inner); }
+    }
+}
 
+	
+extern "C" fn update_cb(
+    status: c_int,
+    res: *mut u64,
+    user: *const c_void
+) {
+    let arc = unsafe {
+	Arc::from_raw(user as *const Mutex<HighwayHashSumData>)
+    };
+    let mut data = arc.lock().unwrap();
+
+    match &mut data.state {
+	HighwayHashSumState::Running(waker) => {
+	    if let Some(waker) = waker.take() {
+		waker.wake();
+	    }
+
+	    data.state = HighwayHashSumState::Finished(match status {
+		ffi::DELUGE_SUCCESS => Ok(unsafe {
+		    slice::from_raw_parts(res, 5)
+		}.try_into().unwrap()),
+		code => Err(code_to_err(code))
+	    });
+	},
+
+	_ => panic!("corrupted state!")
+    }
+}
+
+impl Highway {
+    pub fn space(&self) -> usize {
+	unsafe { ffi::deluge_highway_space(self.inner) }
+    }
+
+    pub fn alloc(&mut self, len: usize) -> Result<(), Error> {
+	unsafe {
+	    match ffi::deluge_highway_alloc(self.inner, len) {
+		ffi::DELUGE_SUCCESS => Ok(()),
+		code => Err(code_to_err(code))
+	    }
+	}
+    }
+
+    pub fn hashsum(&self, elems: &[u64]) -> HighwayHashSum<'_> {
+	HighwayHashSum::new(self, elems)
+    }
+}
+
+impl Drop for Highway {
+    fn drop(&mut self) {
+	unsafe { ffi::deluge_highway_destroy(self.inner); }
+    }
+}
+
+
+
+impl<'a> HighwayHashSum<'a> {
+    fn new(runner: &'a Highway, input: &[u64]) -> Self {
+	let data = Arc::new(Mutex::new(HighwayHashSumData {
+	    input: input.to_vec(),
+	    state: HighwayHashSumState::Created,
+	}));
+
+	HighwayHashSum {
+	    runner,
+	    inner: data
+	}
+    }
+}
+
+impl<'a> Future for HighwayHashSum<'a> {
+    type Output = Result<[u64; 5], Error>;
+
+    fn poll(
+	self: Pin<&mut Self>,
+	cx: &mut Context<'_>
+    ) -> Poll<Self::Output> {
+	let mut data = self.inner.lock().unwrap();
+
+	match &data.state {
+	    HighwayHashSumState::Created => {
+		match unsafe {
+		    ffi::deluge_highway_schedule(
+			self.runner.inner, data.input.as_ptr(),
+			data.input.len(), Some(update_cb),
+			Arc::into_raw(Arc::clone(&self.inner)) as *const c_void
+		    )
+		} {
+		    ffi::DELUGE_SUCCESS => {
+			data.state = HighwayHashSumState::Running
+			    (Some(cx.waker().clone()));
+			Poll::Pending
+		    },
+		    code => Poll::Ready(Err(code_to_err(code)))
+		}
+	    },
+
+	    HighwayHashSumState::Finished(res) =>
+		Poll::Ready(res.clone()),
+
+	    _ => Poll::Pending
+	}
+    }
+}
 
 
 #[cfg(test)]
@@ -290,19 +277,172 @@ mod tests {
     use super::*;
 
     #[test]
-    fn highway() {
-	let key: [u64; 4] = [ 0, 1, 2, 3 ];
-	let mut rh = Deluge::new().and_then(|mut d| d.new_highway(&key));
+    fn deluge() {
+	let deluge = Deluge::new();
 
-	assert!(rh.is_ok());
+	assert!(deluge.is_ok());
 
-	match rh.as_mut().unwrap().space() {
-	    space if space > 0 => {
-		assert!(rh.as_mut().unwrap().alloc(space).is_ok());
-		assert!(task::block_on(rh.as_mut().unwrap().hashsum(&[ 0, 1, 2, 3, 4 ])) == Ok([8599386087226438984, 5313723462932329624, 10655888748344772545, 427566931447375920, 4]));
-	    },
-	    space => assert!(space == 0)
+	let deluge = Deluge::new();
+
+	assert!(deluge.is_ok());
+    }
+
+    #[test]
+    fn highway_dispatch() {
+	let mut deluge = Deluge::new().unwrap();
+	let mut highway = deluge.new_highway(&[0, 0, 0, 0]);
+
+	assert!(highway.is_ok());
+	assert!(highway.as_mut().unwrap().space() > 0);
+
+	{
+	    let mut highway2 = deluge.new_highway(&[1, 1, 1, 1]);
+
+	    assert!(highway2.is_ok());
+	    assert!(highway2.as_mut().unwrap().space() > 0);
 	}
+
+	assert!(highway.as_mut().unwrap().space() > 0);
+    }
+
+    #[test]
+    fn highway_station() {
+	let mut highway = Deluge::new().unwrap()
+	    .new_highway(&[0, 0, 0, 0]).unwrap();
+	let space = highway.space();
+
+	assert!(space > 0);
+	assert!(highway.alloc(space).is_ok());
+    }
+
+    #[test]
+    fn highway_station_overalloc() {
+	let mut highway = Deluge::new().unwrap()
+	    .new_highway(&[0, 0, 0, 0]).unwrap();
+
+	let space = highway.space();
+
+	assert!(space > 0);
+	assert!(highway.alloc(space + 1).is_err());
+    }
+
+    #[test]
+    fn highway_station_peer_overalloc() {
+	let mut deluge = Deluge::new().unwrap();
+	let mut highway0 = deluge.new_highway(&[0, 0, 0, 0]).unwrap();
+	let mut highway1 = deluge.new_highway(&[1, 1, 1, 1]).unwrap();
+
+	let space = highway0.space();
+
+	assert!(space > 0);
+	assert!(highway0.alloc(space).is_ok());
+	assert!(highway1.alloc(1).is_err());
+    }
+
+
+    #[test]
+    fn highway_station_peer_alloc() {
+	let mut deluge = Deluge::new().unwrap();
+
+	{
+	    let mut highway = deluge.new_highway(&[0, 0, 0, 0]).unwrap();
+	    let space = highway.space();
+
+	    assert!(space > 0);
+	    assert!(highway.alloc(space).is_ok());
+	}
+
+	let mut highway = deluge.new_highway(&[1, 1, 1, 1]).unwrap();
+	let space = highway.space();
+
+	assert!(space > 0);
+	assert!(highway.alloc(space).is_ok());
+    }
+
+    #[test]
+    fn hashsum_1() {
+	let mut highway = Deluge::new().unwrap()
+	    .new_highway(&[0, 0, 0, 0]).unwrap();
+
+	highway.alloc(1).unwrap();
+
+	let r0 = highway.hashsum(&[ 0 ]);
+	let r42 = highway.hashsum(&[ 42 ]);
+	let rx42 = highway.hashsum(&[ 0x42 ]);
+
+	assert!(task::block_on(r0) == Ok([
+	    0x0,
+	    0x0701193da083522b,
+	    0x6b99c091c72ef638,
+	    0x24dc7fc2c8b68d6a,
+	    0xac3786ba2a5e196a,
+	]));
+
+	assert!(task::block_on(r42) == Ok([
+	    0x0,
+	    0xfd00061d65b9bf7a,
+	    0x84b3581cde02ecd3,
+	    0xaf7b369076ebe2eb,
+	    0xfbd66042f30b2659,
+	]));
+
+	assert!(task::block_on(rx42) == Ok([
+	    0x0,
+	    0xe4bb8aab495594b0,
+	    0xa4121785c37f59e7,
+	    0xdf4fd944e18a068c,
+	    0x2edfa2ccc62dab81,
+	]));
+    }
+
+    #[test]
+    fn hashsum_3() {
+	let mut highway = Deluge::new().unwrap()
+	    .new_highway(&[0, 0, 0, 0]).unwrap();
+
+	highway.alloc(1).unwrap();
+
+	assert!(task::block_on(highway.hashsum(&[ 0, 42, 0x42 ])) == Ok([
+	    0x1,
+	    0xe8bcaa064f92a656,
+	    0x945f303468b13cf3,
+	    0xb3a78f98212c76e2,
+	    0xd6ed89c9e396eb44,
+	]));
+    }
+
+    #[test]
+    fn hashsum_131072() {
+	let input = (0..131072).collect::<Vec<u64>>();
+	let mut highway = Deluge::new().unwrap().new_highway(&[
+	    0, 0, 0, 0
+	]).unwrap();
+
+	highway.alloc(1).unwrap();
+
+	assert!(task::block_on(highway.hashsum(&input)) == Ok([
+	    0xffb6,
+	    0xc8ae5496e8d216e5,
+	    0x84fee0def30639fe,
+	    0xb486b72eb5d5d3a9,
+	    0x1dbb0f7a65c6f59c,
+	]));
+
+	let mut highway = Deluge::new().unwrap().new_highway(&[
+	    0x55551badb002ffff,
+	    0x1010cafebabe0101,
+	    0x1234deadbeef4321,
+	    0x0000deadc0de0000
+	]).unwrap();
+
+	highway.alloc(1).unwrap();
+
+	assert!(task::block_on(highway.hashsum(&input)) == Ok([
+	    0xffca,
+	    0x1647d33b8317b1d0,
+	    0xbe3da9ac48240bbf,
+	    0x02c7914b8f418d38,
+	    0xe50b1599653c514f,
+	]));
     }
 }
-
