@@ -32,6 +32,11 @@ static inline void uint256_init_le64(uint256_t *restrict dst,
 		dst->arr[i] = src[i];
 }
 
+static inline uint64_t *uint256_cast_le64(uint256_t *src)
+{
+	return src->arr;
+}
+
 
 typedef struct
 {
@@ -64,6 +69,21 @@ static inline void uint320_init_le64(uint320_t *restrict dst,
 
 	for (i = 0; i < 5; i++)
 		dst->arr[i] = src[i];
+}
+
+static inline uint64_t *uint320_cast_le64(uint320_t *src)
+{
+	return src->arr;
+}
+
+static inline void uint320_init_256(uint320_t *restrict dst,
+				    const uint256_t *restrict src)
+{
+	size_t i;
+
+	for (i = 0; i < 4; i++)
+		dst->arr[i] = src->arr[i];
+	dst->arr[4] = 0;
 }
 
 
