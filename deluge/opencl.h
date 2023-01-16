@@ -29,6 +29,36 @@ typedef unsigned int   uint32_t;
 typedef unsigned long  uint64_t;
 
 
+#define __bswap_64(x)			      \
+	((((x) & 0xff00000000000000ull) >> 56)        \
+	 | (((x) & 0x00ff000000000000ull) >> 40)      \
+	 | (((x) & 0x0000ff0000000000ull) >> 24)      \
+	 | (((x) & 0x000000ff00000000ull) >> 8)       \
+	 | (((x) & 0x00000000ff000000ull) << 8)       \
+	 | (((x) & 0x0000000000ff0000ull) << 24)      \
+	 | (((x) & 0x000000000000ff00ull) << 40)      \
+	 | (((x) & 0x00000000000000ffull) << 56))
+
+
+#if (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)  /* host is little endian */
+#  ifdef __ENDIAN_LITTLE__                       /*  device is little endian */
+#    define htod64(_host_64)   (_host_64)
+#    define dtoh64(_dev_64)    (_dev_64)
+#  else                                          /*  device is big endian */
+#    define htod64(_host_64)   __bswap_64(_host_64)
+#    define dtoh64(_host_64)   __bswap_64(_host_64)
+#  endif
+#else                                            /* host is big endian */
+#  ifdef __ENDIAN_LITTLE__                       /*  device is little endian */
+#    define htod64(_host_64)   __bswap_64(_host_64)
+#    define dtoh64(_host_64)   __bswap_64(_host_64)
+#  else                                          /*  device is big endian */
+#    define htod64(_host_64)   (_host_64)
+#    define dtoh64(_dev_64)    (_dev_64)
+#  endif
+#endif
+
+
 #else  /* !defined (__OPENCL_VERSION__) */
 
 
