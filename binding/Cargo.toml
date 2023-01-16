@@ -1,0 +1,9 @@
+[package]
+name = "deluge"
+version = "0.1.0"
+edition = "2018"
+links = "deluge"
+
+[dependencies]
+async-std = { version = "1.9.0" }
+libc = { version = "0.2" }
