@@ -1,4 +1,5 @@
 .config/
+binding/target/
 obj/
 lib/
 bin/
