@@ -9,86 +9,62 @@
 #define DELUGE_SUCCESS       0  /* Operation successful */
 #define DELUGE_FAILURE      -1  /* Implementation issue, use debug mode */
 #define DELUGE_NODEV        -2  /* Not suitable device */
-#define DELUGE_OUT_OF_GMEM  -3  /* Not enough device global memory */
-#define DELUGE_OUT_OF_LMEM  -4  /* Not enough device local memory */
-#define DELUGE_CANCEL       -5  /* Job canceled */
-
-
-struct deluge;
-
-/*
- * A deluge context.
- * Manage accelerator device resources and orchestrate between one or more
- * dispatches.
- */
-typedef struct deluge *deluge_t;
-
-/*
- * Create a new deluge context.
- * Allocate resources for an empty deluge context.
- * Return `DELUGE_SUCCESS` in case of success.
- */
-int deluge_create(deluge_t *deluge);
-
-/*
- * Destroy a deluge context.
- * The given deluge context is no more usable after this call.
- * The objects associated to this context are still usable.
- */
-void deluge_destroy(deluge_t deluge);
+#define DELUGE_NOMEM        -3  /* Not enough device memory */
+#define DELUGE_CANCEL       -4  /* Job canceled */
 
 
 /*
- * A highway hash and sum dispatch.
- * Dispach and schedule jobs between one or more accelerator devices.
+ * Initialize deluge global management structures.
+ * This is called implicitely by first usage to deluge routines.
  */
-struct deluge_highway;
-
-typedef struct deluge_highway *deluge_highway_t;
+int deluge_init(void);
 
 /*
- * Create a new highway hash and sum dispatch .
- * Compile the highway kernel program on all deluge devices and get them ready
- * to perform jobs with the given `key`.
- * Return `DELUGE_SUCCESS` in case of success.
+ * Free deluge global management structures.
+ * This should be used only before ending the program or before any deluge
+ * routine is called for a long time.
  */
-int deluge_highway_create(deluge_t deluge, deluge_highway_t *highway,
-			  const uint64_t key[4]);
+void deluge_finalize(void);
+
 
 /*
- * Destroy the given highway dispatch.
- * The given dispatch is no more usable after this call.
+ * Device job dispatcher.
+ * The type of job it dispatches depends on how it was created.
  */
-void deluge_highway_destroy(deluge_highway_t highway);
+struct deluge_dispatch;
+
+typedef struct deluge_dispatch *deluge_dispatch_t;
 
 /*
- * Indicate how many highway hash and sum stations can be allocated on the
- * given dispatch.
- * Allocating more than the given number returns an error.
- * A dispatch cannot process jobs with less than a station.
- * More stations usually result in better throughput.
+ * Destroy the given `this` dispatcher.
+ * The already scheduled jobs are canceled (i.e. they terminate with
+ * `DELUGE_CANCEL`).
+ * Internal resources of this dispatcher are freed.
+ * Memory areas allocated from this dispatcher are still valid until freed.
  */
-size_t deluge_highway_space(deluge_highway_t highway);
+void deluge_dispatch_destroy(deluge_dispatch_t this);
+
+
+#define DELUGE_HASHSUM64_LEN  40
+
+int deluge_hashsum64_schedule(deluge_dispatch_t this,
+			      const uint64_t *restrict elems, size_t nelem,
+			      void (*cb)(int, void *, void *), void *user);
+
 
 /*
- * Allocate `len` stations on the given dispatch.
- * Return `DELUGE_SUCCESS` in case of success.
+ * Size of hashsum64 with blake3 key.
  */
-int deluge_highway_alloc(deluge_highway_t highway, size_t len);
+#define DELUGE_BLAKE3_KEYLEN  32
 
 /*
- * Schedule a job on the given dispatch to do the follosing:
- * - perform a highway hash on each of the `nelem` elements in `elems`
- * - sum all the resulting `uint256_t` into a single `uint320_t`
- * - call the given `cb` callback giving it the following arguments:
- *   - the status of the job: `DELUGE_SUCCESS` in case of success
- *   - the resulting `uint320_t` in big endian
- *   - the given `user` argument
- * Return `DELUGE_SUCCESS` if the job has been successfully scheduled.
+ * Create a dispatcher for hashsum64 jobs using the blake3 hashing algorithm.
+ * The blake3 algorithm is salted with the provided `DELUGE_BLAKE3_KEYLEN` bits
+ * long `key`.
+ * On success, store the new dispatch in `*this` and return `DELUGE_SUCCESS`.
  */
-int deluge_highway_schedule(deluge_highway_t highway, const uint64_t *elems,
-			    size_t nelem, void (*cb)(int, uint64_t[5], void *),
-			    void *user);
+int deluge_hashsum64_blake3_create(deluge_dispatch_t *restrict this,
+				   const void *key);
 
 
 #endif
