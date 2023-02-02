@@ -56,6 +56,12 @@ int __deluge_c_error(const char *filename, int linenum)
 	return DELUGE_FAILURE;
 }
 
+int __deluge_pthread_error(const char *filename, int linenum, int ret)
+{
+	fprintf(stderr, "%s:%d: %s\n", filename, linenum, strerror(ret));
+	return DELUGE_FAILURE;
+}
+
 int __deluge_cl_error(const char *filename, int linenum, cl_int clret)
 {
 	fprintf(stderr, "%s:%d: %s\n", filename, linenum,
@@ -95,6 +101,13 @@ int __deluge_cl_link_error(const char *filename, int linenum, cl_int clret,
 
 int __deluge_c_error(const char *filename __attribute__ ((unused)),
 		     int linenum __attribute__ ((unused)))
+{
+	return DELUGE_FAILURE;
+}
+
+int __deluge_pthread_error(const char *filename __attribute__ ((unused)),
+			   int linenum __attribute__ ((unused)),
+			   int ret __attribute__ ((unused)))
 {
 	return DELUGE_FAILURE;
 }

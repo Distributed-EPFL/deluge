@@ -10,6 +10,12 @@
 int __deluge_c_error(const char *filename, int linenum);
 
 
+#define deluge_pthread_error(_ret)  \
+	__deluge_pthread_error(__FILE__, __LINE__, _ret)
+
+int __deluge_pthread_error(const char *filename, int linenum, int ret);
+
+
 #define deluge_cl_error(_clret)  __deluge_cl_error(__FILE__, __LINE__, _clret)
 
 int __deluge_cl_error(const char *filename, int linenum, cl_int clret);
