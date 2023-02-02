@@ -1,0 +1,8 @@
+[package]
+name = "libdeluge-sys"
+version = "0.1.0"
+edition = "2018"
+links = "deluge"
+
+[dependencies]
+libc = { version = "0.2" }

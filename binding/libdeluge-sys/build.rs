@@ -7,8 +7,9 @@ use std::{
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../Makefile");
-    println!("cargo:rerun-if-changed=../deluge");
+    println!("cargo:rerun-if-changed=../../Makefile");
+    println!("cargo:rerun-if-changed=../../deluge");
+    println!("cargo:rerun-if-changed=../../include");
 
     let mut cflags = String::from("CFLAGS=");
     let mut ldflags = String::from("LDFLAGS=");
@@ -34,14 +35,14 @@ fn main() {
 	}
     }
 
-    let makeopts = vec![ "-C", "..", "clean", "all", &cflags, &ldflags ];
+    let makeopts = vec![ "-C", "../..", "clean", "all", &cflags, &ldflags ];
 
     Command::new("make")
 	.args(&makeopts)
 	.status()
 	.expect("failed to make!");
 
-    println!("cargo:rustc-link-search=../lib");
+    println!("cargo:rustc-link-search=../../lib");
     println!("cargo:rustc-link-lib=static=deluge");
     println!("cargo:rustc-link-lib=dylib=OpenCL");
 }
