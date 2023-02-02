@@ -1,62 +1,29 @@
+#include <assert.h>
 #include <deluge.h>
-#include "deluge/atomic.h"
 #include "deluge/deluge.h"
 #include "deluge/device.h"
 #include "deluge/error.h"
-#include "deluge/highway.h"
-#include <stdlib.h>
+#include "deluge/opencl.h"
+#include <pthread.h>
 
 
-static ssize_t discover_platform_devices(struct deluge *this,
-					 struct device *dest, size_t len,
-					 cl_platform_id plid)
+/* Deluge context of the current process */
+static struct deluge __deluge;
+
+/* Lock over process deluge context */
+static pthread_mutex_t __deluge_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Reference count on the process deluge context */
+static size_t __deluge_refcnt = 0;
+
+/* Deluge context is initialized */
+static int __deluge_inited = 0;
+
+
+static int init_platforms(struct deluge *this)
 {
-	cl_device_id *devids;
-	cl_uint i, ndevid;
+	cl_uint nplid;
 	cl_int clret;
-	size_t done;
-	int ret;
-
-	devids = malloc(len * sizeof (*devids));
-	if (devids == NULL) {
-		deluge_c_error();
-		goto err;
-	}
-
-	clret = clGetDeviceIDs(plid, CL_DEVICE_TYPE_ALL, len, devids, &ndevid);
-	if (clret != CL_SUCCESS) {
-		deluge_cl_error(clret);
-		goto err_devids;
-	}
-
-	done = 0;
-	for (i = 0; i < ndevid; i++) {
-		ret = init_device(&dest[done], this, devids[i]);
-		if (ret != DELUGE_SUCCESS)
-			goto err_list;
-		done += 1;
-	}
-
-	free(devids);
-
-	return done;
- err_list:
-	while (done-- > 0)
-		finlz_device(&dest[done]);
- err_devids:
-	free(devids);
- err:
-	return -1;
-}
-
-static int discover_devices(struct deluge *this)
-{
-	cl_uint i, nplid, ndevid;
-	cl_platform_id *plids;
-	struct device *devs;
-	size_t len, cap;
-	cl_int clret;
-	ssize_t ret;
 	int err;
 
 	clret = clGetPlatformIDs(0, NULL, &nplid);
@@ -65,81 +32,112 @@ static int discover_devices(struct deluge *this)
 		goto err;
 	}
 
-	plids = malloc(nplid * sizeof (*plids));
-	if (plids == NULL) {
+	this->platforms = malloc(nplid * sizeof (*this->platforms));
+	if (this->platforms == NULL) {
 		err = deluge_c_error();
 		goto err;
 	}
 
-	clret = clGetPlatformIDs(nplid, plids, NULL);
+	clret = clGetPlatformIDs(nplid, this->platforms, &nplid);
 	if (clret != CL_SUCCESS) {
 		err = deluge_cl_error(clret);
-		goto err_plids;
+		goto err_platforms;
 	}
 
-	cap = 0;
-	for (i = 0; i < nplid; i++) {
-		clret = clGetDeviceIDs(plids[i], CL_DEVICE_TYPE_ALL, 0, NULL,
-				       &ndevid);
-		if (clret != CL_SUCCESS) {
-			err = deluge_cl_error(clret);
-			goto err_plids;
-		}
-
-		cap += ndevid;
-	}
-
-	devs = malloc(cap * sizeof (*devs));
-	if (devs == NULL) {
-		err = deluge_c_error();
-		goto err_plids;
-	}
-
-	len = 0;
-	for (i = 0; i < nplid; i++) {
-		ret = discover_platform_devices(this, devs+len, cap, plids[i]);
-
-		if (ret < 0) {
-			err = DELUGE_FAILURE;
-			goto err_list;
-		} else {
-			len += (size_t) ret;
-			cap -= (size_t) ret;
-		}
-	}
-
-	this->devices = realloc(devs, len * sizeof (*devs));
-	this->ndevice = len;
-
-	free(plids);
+	this->nplatform = nplid;
 
 	return DELUGE_SUCCESS;
- err_list:
-	while (len-- > 0)
-		finlz_device(&devs[len]);
-	free(devs);
- err_plids:
-	free(plids);
+ err_platforms:
+	free(this->platforms);
  err:
 	return err;
 }
 
-static int init_deluge(struct deluge *this)
+static void finlz_platforms(struct deluge *this)
 {
+	size_t i;
+
+	for (i = 0; i < this->nplatform; i++)
+		clUnloadPlatformCompiler(this->platforms[i]);
+
+	free(this->platforms);
+}
+
+static int init_devices(struct deluge *this)
+{
+	cl_uint i, ndevid, *ndevids;
+	cl_device_id *devids;
+	cl_int clret;
 	int err;
 
-	err = discover_devices(this);
-	if (err != DELUGE_SUCCESS)
-		goto err_discover;
+	ndevids = malloc(this->nplatform * sizeof (*ndevids));
+	if (ndevids == NULL) {
+		err = deluge_c_error();
+		goto err;
+	}
 
-	atomic_store_uint64(&this->refcnt, 1);
+	ndevid = 0;
+	for (i = 0; i < this->nplatform; i++) {
+		clret = clGetDeviceIDs(this->platforms[i], CL_DEVICE_TYPE_ALL,
+				       0, NULL, &ndevids[i]);
+		if (clret != CL_SUCCESS) {
+			err = deluge_cl_error(clret);
+			goto err_ndevids;
+		}
+
+		ndevid += ndevids[i];
+	}
+
+	devids = malloc(ndevid * sizeof (*devids));
+	if (devids == NULL) {
+		err = deluge_c_error();
+		goto err_ndevids;
+	}
+
+	ndevid = 0;
+	for (i = 0; i < this->nplatform; i++) {
+		clret = clGetDeviceIDs(this->platforms[i], CL_DEVICE_TYPE_ALL,
+				       ndevids[i], &devids[ndevid],
+				       &ndevids[i]);
+		if (clret != CL_SUCCESS) {
+			err = deluge_cl_error(clret);
+			goto err_devids;
+		}
+
+		ndevid += ndevids[i];
+	}
+
+	this->devices = malloc(ndevid * sizeof (*this->devices));
+	if (this->devices == NULL) {
+		err = deluge_c_error();
+		goto err_devids;
+	}
+
+	for (i = 0; i < ndevid; i++) {
+		err = init_device(&this->devices[i], this, devids[i]);
+		if (err != DELUGE_SUCCESS)
+			goto err_devices;
+	}
+
+	this->ndevice = ndevid;
+
+	free(devids);
+	free(ndevids);
 
 	return DELUGE_SUCCESS;
- err_discover:
+ err_devices:
+	while (i-- > 0)
+		finlz_device(&this->devices[i]);
+	free(this->devices);
+ err_devids:
+	free(devids);
+ err_ndevids:
+	free(ndevids);
+ err:
 	return err;
 }
 
-static void finlz_deluge(struct deluge *this)
+static void finlz_devices(struct deluge *this)
 {
 	size_t i;
 
@@ -149,47 +147,103 @@ static void finlz_deluge(struct deluge *this)
 	free(this->devices);
 }
 
-struct deluge *retain_deluge(struct deluge *this)
+static int init_deluge(struct deluge *this)
 {
-	atomic_add_uint64(&this->refcnt, 1);
-	return this;
-}
-
-void release_deluge(struct deluge *this)
-{
-	if (atomic_sub_uint64(&this->refcnt, 1) > 0)
-		return;
-	finlz_deluge(this);
-	free(this);
-}
-
-
-int deluge_create(deluge_t *deluge)
-{
-	struct deluge *this;
 	int err;
 
-	this = malloc(sizeof (struct deluge));
-	if (this == NULL) {
-		err = deluge_c_error();
-		goto err;
-	}
-
-	err = init_deluge(this);
+	err = init_platforms(this);
 	if (err != DELUGE_SUCCESS)
-		goto err_this;
+		goto err;
 
-	*deluge = this;
+	err = init_devices(this);
+	if (err != DELUGE_SUCCESS)
+		goto err_platforms;
 
 	return DELUGE_SUCCESS;
- err_this:
-	free(this);
+ err_platforms:
+	finlz_platforms(this);
  err:
-	*deluge = NULL;   /* make gcc happy */
 	return err;
 }
 
-void deluge_destroy(deluge_t deluge)
+static void finlz_deluge(struct deluge *this)
 {
-	release_deluge(deluge);
+	finlz_devices(this);
+	finlz_platforms(this);
+}
+
+
+static int __deluge_init(void)
+{
+	int ret;
+
+	if (__deluge_inited)
+		return DELUGE_SUCCESS;
+
+	ret = init_deluge(&__deluge);
+	if (ret != DELUGE_SUCCESS)
+		return ret;
+
+	__deluge_inited = 1;
+	assert(__deluge_refcnt == 0);
+
+	return DELUGE_SUCCESS;
+}
+
+int deluge_init(void)
+{
+	int ret;
+
+	pthread_mutex_lock(&__deluge_lock);
+	ret = __deluge_init();
+	pthread_mutex_unlock(&__deluge_lock);
+
+	return ret;
+}
+
+void deluge_finalize(void)
+{
+	pthread_mutex_lock(&__deluge_lock);
+
+	if ((__deluge_refcnt == 0) && (__deluge_inited)) {
+		finlz_deluge(&__deluge);
+		__deluge_inited = 0;
+	}
+
+	pthread_mutex_unlock(&__deluge_lock);
+}
+
+
+struct deluge *get_deluge(int *err)
+{
+	struct deluge *this;
+	int _err;
+
+	if (err == NULL)
+		err = &_err;
+
+	pthread_mutex_lock(&__deluge_lock);
+
+	*err = __deluge_init();
+
+	if (*err != DELUGE_SUCCESS) {
+		this = NULL;
+	} else {
+		this = &__deluge;
+		__deluge_refcnt += 1;
+	}
+
+	pthread_mutex_unlock(&__deluge_lock);
+
+	return this;
+}
+
+void put_deluge(void)
+{
+	pthread_mutex_lock(&__deluge_lock);
+
+	assert(__deluge_refcnt > 0);
+	__deluge_refcnt -= 1;		
+
+	pthread_mutex_unlock(&__deluge_lock);
 }
