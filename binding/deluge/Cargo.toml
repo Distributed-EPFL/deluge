@@ -19,3 +19,9 @@ version = "0.1.0"
 
 [dev-dependencies]
 async-std = { version = "1.9.0" }
+criterion = { version = "0.3", features = [ "async_tokio" ] }
+tokio = { version = "1.25.0", features = [ "rt-multi-thread" ] }
+
+[[bench]]
+name = "hashsum64"
+harness = false
