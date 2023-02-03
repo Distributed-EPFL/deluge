@@ -12,7 +12,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../include");
 
     let mut cflags = String::from("CFLAGS=");
-    let mut ldflags = String::from("LDFLAGS=");
+    let ldflags = String::from("LDFLAGS=");
 
     if let Ok("false") = env::var("DEBUG").as_deref() {
 	cflags.push_str(" -DNDEBUG");
@@ -27,10 +27,6 @@ fn main() {
 	if let Ok(lvl) = opt.parse::<u8>() {
 	    if lvl >= 1 {
 		cflags.push_str(format!(" -O2 {}", archflags).as_str());
-	    }
-	    if lvl >= 3 {
-		cflags.push_str(" -flto");
-		ldflags.push_str(" -flto");
 	    }
 	}
     }
